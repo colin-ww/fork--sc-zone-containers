@@ -1,0 +1,108 @@
+# Stand-in check: do R packages from Posit Package Manager (PPM) load on the image?
+#
+# The real image build (docker.yaml) needs StatCan's ACR, which a fork can't reach.
+# This rebuilds only the parts that decide whether an R binary loads:
+#   - every apt package from the docker-stacks chain + images/base + images/mid (bare ubuntu:24.04)
+#   - conda-forge r-base, pinned as in images/mid, with the same PPM user agent
+# then installs R_PACKAGES (tests/general/test_r.py) plus a few probe packages from PPM
+# and runs library() on each in a fresh R.
+#
+# Two jobs: "today" uses StatCan master's Dockerfiles, "proposed" this branch's.
+# Not covered: rstudio-server, azure-cli and Microsoft ODBC debs (no R package links them).
+name: R system libs (stand-in check)
+
+on:
+  push:
+    branches-ignore: [master, beta]
+    paths:
+      - .github/workflows/r-sysdeps-check.yml
+      - .github/scripts/r-sysdeps-check/**
+      - images/base/Dockerfile
+      - images/mid/Dockerfile
+      - tests/general/test_r.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "today (StatCan master)"
+            tree: upstream
+          - name: "proposed (this branch)"
+            tree: branch
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      PPM: https://packagemanager.posit.co/cran/__linux__/noble/latest
+      # libs proposed for images/mid; xml2 = control (its lib is already in the image)
+      PROBE_PKGS: xml2 gsl rgl magick keyring pdftools RProtoBuf
+      CHECK_NAME: ${{ matrix.name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools for this check
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates curl python3-minimal bzip2 >/dev/null
+
+      - name: Dockerfiles to test
+        id: tree
+        run: |
+          files="images/base/Dockerfile images/mid/Dockerfile tests/general/test_r.py .github/workflows/docker.yaml"
+          mkdir -p tree ds
+          if [ "${{ matrix.tree }}" = upstream ]; then
+            for f in $files; do
+              mkdir -p "tree/$(dirname "$f")"
+              curl -fsSL "https://raw.githubusercontent.com/StatCan/zone-kubeflow-containers/master/$f" -o "tree/$f"
+            done
+          else
+            cp --parents $files tree/
+          fi
+          ref=$(grep -oE "DOCKER_STACKS_REF: *[\"']?[0-9a-f]{40}" tree/.github/workflows/docker.yaml | grep -oE "[0-9a-f]{40}$" | head -1)
+          for i in docker-stacks-foundation base-notebook minimal-notebook scipy-notebook datascience-notebook; do
+            curl -fsSL "https://raw.githubusercontent.com/jupyter/docker-stacks/$ref/images/$i/Dockerfile" -o "ds/$i.Dockerfile"
+          done
+          r_pin=$(grep -oE "'r-base=[0-9.]+'" tree/images/mid/Dockerfile | tr -d "'" | head -1)
+          echo "r_pin=${r_pin:?r-base pin not found in images/mid/Dockerfile}" >> "$GITHUB_OUTPUT"
+          echo "docker-stacks $ref, $r_pin"
+
+      - name: apt packages, as the image installs them
+        run: |
+          pkgs=$(python3 -I .github/scripts/r-sysdeps-check/apt-from-dockerfiles.py ds/*.Dockerfile tree/images/base/Dockerfile tree/images/mid/Dockerfile)
+          echo "$pkgs" | tr ' ' '\n' | tee apt-pkgs.txt | wc -l
+          apt-get install -y -q --no-install-recommends $pkgs > apt.log 2>&1 || { tail -50 apt.log; exit 1; }
+          dpkg-query -W -f='${Package}\n' | wc -l
+
+      - name: R from conda-forge, as images/mid
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: zone
+          create-args: ${{ steps.tree.outputs.r_pin }}
+          condarc: |
+            channels: [conda-forge]
+
+      - name: PPM user agent, as images/mid
+        run: |
+          echo "RSCRIPT=$MAMBA_ROOT_PREFIX/envs/zone/bin/Rscript" >> "$GITHUB_ENV"
+          printf '%s\n' 'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))' \
+            >> "$MAMBA_ROOT_PREFIX/envs/zone/lib/R/etc/Rprofile.site"
+          "$MAMBA_ROOT_PREFIX/envs/zone/bin/Rscript" -e 'cat(R.version.string, "|", getOption("HTTPUserAgent"), "\n")'
+
+      - name: Install R packages from PPM
+        run: |
+          "$RSCRIPT" .github/scripts/r-sysdeps-check/check.R install tree/tests/general/test_r.py $PROBE_PKGS 2>&1 | tee install.log | grep -E "installing \*|ERROR|cannot" || true
+
+      - name: library() each package
+        run: |
+          "$RSCRIPT" .github/scripts/r-sysdeps-check/check.R load tree/tests/general/test_r.py $PROBE_PKGS
