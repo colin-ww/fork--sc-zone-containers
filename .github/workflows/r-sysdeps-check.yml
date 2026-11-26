@@ -8,6 +8,9 @@
 # and runs library() on each in a fresh R.
 #
 # Two jobs: "today" uses StatCan master's Dockerfiles, "proposed" this branch's.
+# Ad hoc: run it manually with a `packages` list to check any R packages load, without
+# touching the Dockerfile. (GitHub shows "Run workflow" only for workflows on the default
+# branch; on another branch, start it through the API.)
 # Not covered: rstudio-server, azure-cli and Microsoft ODBC debs (no R package links them).
 name: R system libs (stand-in check)
 
@@ -21,6 +24,11 @@ on:
       - images/mid/Dockerfile
       - tests/general/test_r.py
   workflow_dispatch:
+    inputs:
+      packages:
+        description: "Extra R packages to probe (space-separated), e.g. 'pdftools survey gt'. Empty = the default probes."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -42,8 +50,9 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
       PPM: https://packagemanager.posit.co/cran/__linux__/noble/latest
-      # libs proposed for images/mid; xml2 = control (its lib is already in the image)
-      PROBE_PKGS: xml2 gsl rgl magick keyring pdftools RProtoBuf
+      # libs proposed for images/mid; xml2 = control (its lib is already in the image).
+      # A manual run (Actions > R system libs > Run workflow) can probe any list instead.
+      PROBE_PKGS: ${{ inputs.packages != '' && format('xml2 {0}', inputs.packages) || 'xml2 gsl rgl magick keyring pdftools RProtoBuf' }}
       CHECK_NAME: ${{ matrix.name }}
     defaults:
       run:
