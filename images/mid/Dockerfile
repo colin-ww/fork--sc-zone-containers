@@ -27,6 +27,12 @@ RUN wget -q "${VSCODE_URL}" -O ./vscode.deb \
         # Ubuntu 24.04, minus what images/base already installs).
         gdal-bin libabsl-dev libgdal-dev libgeos-dev libgit2-dev libhdf5-dev libicu-dev libproj-dev \
         libsqlite3-dev libudunits2-dev libuv1-dev libwebp-dev libx11-dev libzmq3-dev \
+        # Libraries for popular user-installed PPM binaries that otherwise
+        # install fine but fail at library() with "cannot open shared object":
+        # gsl (~340 CRAN pkgs incl. copula), rgl (~235, heplots, matlib),
+        # magick (~145, summarytools), keyring (~55), pdftools (~50, readtext),
+        # RProtoBuf (~35, rjd3x13/rjd3tramoseats = JDemetra+ 3). ~78 MB.
+        libgsl-dev libglu1-mesa-dev libmagick++-dev libsecret-1-dev libpoppler-cpp-dev libprotobuf-dev \
     && dpkg -i ./vscode.deb \
     && rm ./vscode.deb \
     && rm -f /etc/apt/sources.list.d/vscode.list \
@@ -136,10 +142,10 @@ RUN printf '%s\n' \
         'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))' \
         >> /opt/conda/lib/R/etc/Rprofile.site \
     && Rscript -e "pkgs <- c('arrow', 'aws.s3', 'caret', 'caTools', 'crayon', 'devtools', 'e1071', 'forecast', \
-                             'hdf5r', 'hexbin', 'htmltools', 'htmlwidgets', 'httr', 'IRkernel', 'jsonlite', \
-                             'languageserver', 'markdown', 'nycflights13', 'odbc', 'randomForest', 'RCurl', \
-                             'renv', 'rmarkdown', 'RODBC', 'RSQLite', 'sf', 'shiny', 'sparklyr', 'tidymodels', \
-                             'tidyverse'); \
+                             'gsl', 'hdf5r', 'hexbin', 'htmltools', 'htmlwidgets', 'httr', 'IRkernel', 'jsonlite', \
+                             'keyring', 'languageserver', 'magick', 'markdown', 'nycflights13', 'odbc', 'pdftools', \
+                             'randomForest', 'RCurl', 'renv', 'rgl', 'rmarkdown', 'RODBC', 'RProtoBuf', 'RSQLite', \
+                             'sf', 'shiny', 'sparklyr', 'tidymodels', 'tidyverse'); \
                     install.packages(pkgs, repos = '${PPM_CRAN_URL}', Ncpus = parallel::detectCores()); \
                     missing <- setdiff(pkgs, rownames(installed.packages())); \
                     if (length(missing) > 0) stop('failed to install: ', paste(missing, collapse = ', '))" \
